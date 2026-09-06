@@ -1,0 +1,25 @@
+name: crawl-A
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 北京时间 09:20（UTC 01:20）与 12:55（UTC 04:55），周一至周五
+    - cron: '20 1 * * 1-5'
+    - cron: '55 4 * * 1-5'
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run collector (Agent A, phase 0s)
+        env:
+          REPORT_ENDPOINT: ${{ secrets.REPORT_ENDPOINT }}
+          SECRET_TOKEN: ${{ secrets.SECRET_TOKEN }}
+          PHASE_OFFSET: '0'
+          AGENT_ID: 'A'
+        run: node collect.mjs
