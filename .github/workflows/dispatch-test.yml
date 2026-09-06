@@ -1,0 +1,11 @@
+name: dispatch-test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  echo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - run: echo ok
