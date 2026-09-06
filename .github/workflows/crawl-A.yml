@@ -2,10 +2,11 @@ name: crawl-A
 
 on:
   workflow_dispatch:
-  schedule:
-    # 北京时间 09:20（UTC 01:20）与 12:55（UTC 04:55），周一至周五
-    - cron: '20 1 * * 1-5'
-    - cron: '55 4 * * 1-5'
+    inputs:
+      note:
+        description: '由 cron-job.org 定时触发（北京时间 09:20 / 12:55，周一至五）'
+        required: false
+        default: ''
 
 jobs:
   crawl:
