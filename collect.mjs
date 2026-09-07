@@ -528,9 +528,8 @@ async function runSession(session) {
     }
 
     beat += BEAT_MS;
-    // 若节拍落后实际时间超过 60 秒（连续超时/重试导致），重新对齐到当前时间，
-    // 避免无间隔追拍造成短时间内大量请求。
-    if (beat < Date.now() - 60000) {
+    // 节拍一旦落后实际时间立即对齐到当前时间，避免延迟累积导致无间隔追拍。
+    if (beat < Date.now()) {
       beat = Date.now();
     }
     const sleepMs = beat - Date.now();
