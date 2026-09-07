@@ -522,10 +522,20 @@ async function main() {
     process.exit(1);
   }
   console.log(`采集 Agent ${AGENT_ID} 启动，上报地址 ${ENDPOINT}`);
-  for (const session of SESSIONS) {
-    await runSession(session);
+
+  // 单次启动只执行「结束时间尚未到达」的第一个会话：
+  // 09:20 触发 → 跑早盘(09:25-11:30)；12:55 触发 → 早盘已过，跑午盘(13:00-15:00)。
+  // 避免单次运行同时覆盖早盘+午盘，导致 09:20 与 12:55 两次触发在午盘重复采集。
+  const now = Date.now();
+  const session = SESSIONS.find((s) => sessionBounds(s).end > now);
+
+  if (!session) {
+    console.log('当前无待执行的交易会话，退出');
+    return;
   }
-  console.log('全天采集结束');
+  console.log(`执行会话 ${session.start}-${session.end}`);
+  await runSession(session);
+  console.log('采集结束');
 }
 
 main().catch((e) => {
