@@ -80,7 +80,7 @@ async function fetchSectorEvents() {
     const data = await resp.json();
     const events = data.Messages || data.messages || [];
     return {
-      time: events.map((e) => e.CreatedAt || e.createdAt || e.timestamp),
+      time: events.map((e) => tsSec(e.CreatedAt || e.createdAt || e.timestamp)),
       event: events.map((e) => (e.Title || e.title || '').split('，')[0]),
       clue: events.map((e) => e.Title || e.title || ''),
     };
@@ -90,11 +90,49 @@ async function fetchSectorEvents() {
   }
 }
 
-function poolToEvents(items, timeField, nameField) {
+// 事件时间戳统一为秒（防御毫秒）；0 视为无效
+function tsSec(v) {
+  if (typeof v !== 'number' || !v) return 0;
+  return v > 1e12 ? v / 1000 : v;
+}
+
+// 三池事件流与 V12 后端直连逻辑对齐（fetchLimitUpData / fetchLimitDownData / fetchLimitUpBrokenData）：
+//  - 时间字段：涨停取 last_limit_up、跌停取 last_limit_down、炸板取 last_break_limit_up；时间戳为 0 的条目剔除
+//  - 标签：仅用股票名（炸板/跌停次数附加在逗号之后，前端取逗号前作为竖排标签），
+//    不再拼接 (代码)——竖排标签若含代码会导致单个标签高度约为 4 倍，相邻时间点大量重叠错乱
+//  - 线索（点击明细）：与 V12 一致（连板数/板块名/涨停原因）
+function poolToEvents(items, mode) {
+  const cfg = {
+    up:     { timeField: 'last_limit_up',         breakField: 'break_limit_up_times',   breakThreshold: 0 },
+    down:   { timeField: 'last_limit_down',       breakField: 'break_limit_down_times', breakThreshold: 1 },
+    broken: { timeField: 'last_break_limit_up',   breakField: 'break_limit_up_times',   breakThreshold: 1 },
+  }[mode];
+
+  const rows = items.filter((i) => tsSec(i[cfg.timeField]) > 0);
+
   return {
-    time: items.map((i) => i[timeField]),
-    event: items.map((i) => `${i.stock_chi_name}(${i.symbol})`),
-    clue: items.map((i) => (nameField === 'break' ? i.break_reason || '' : i.surge_reason?.reason || '')),
+    time: rows.map((i) => tsSec(i[cfg.timeField])),
+    event: rows.map((i) => {
+      const name = String(i.stock_chi_name || '').replace(/\s/g, '');
+      const breakTimes = i[cfg.breakField] || 0;
+      return breakTimes > cfg.breakThreshold ? `${name},${breakTimes}` : name;
+    }),
+    clue: rows.map((i) => {
+      const sr = i.surge_reason;
+      if (mode === 'down') {
+        return typeof sr === 'string' ? sr : '';
+      }
+      let reason = '';
+      if (sr && typeof sr === 'object') {
+        const plate = sr.related_plates && sr.related_plates[0];
+        if (plate) {
+          reason = mode === 'broken' ? (plate.plate_name || '') : `${plate.plate_name || ''},${plate.plate_reason || ''}`;
+        }
+        if (sr.stock_reason) reason += (reason ? (mode === 'broken' ? '，' : '。') : '') + sr.stock_reason;
+      }
+      if (mode === 'up' && i.limit_up_days) reason = `${i.limit_up_days}板,${reason}`;
+      return reason;
+    }),
   };
 }
 
@@ -413,9 +451,9 @@ async function collectBeat(beatTs) {
 
   last.events = {
     板块异动: sectorEvents,
-    个股涨停: poolToEvents(upItems, 'first_limit_up'),
-    个股跌停: poolToEvents(downItems, 'first_limit_down'),
-    炸板个股: poolToEvents(brokenItems, 'last_break_limit_up', 'break'),
+    个股涨停: poolToEvents(upItems, 'up'),
+    个股跌停: poolToEvents(downItems, 'down'),
+    炸板个股: poolToEvents(brokenItems, 'broken'),
     timestamp: new Date().toISOString(),
   };
 
