@@ -239,12 +239,18 @@ async function fetchIndicators() {
 
 async function fetchTurnover() {
   try {
-    const resp = await fetch(
-      'https://x-quote.cls.cn/v2/quote/a/stock/emotion?app=CailianpressWeb&os=web&sv=8.4.6&sign=9f8797a1f4de66c2370f7a03990d2737',
-      { headers: { ...HEADERS, Referer: 'https://www.cls.cn/' }, signal: AbortSignal.timeout(10000) }
+    const resp = await withRetry(() =>
+      fetch(
+        'https://x-quote.cls.cn/v2/quote/a/stock/emotion?app=CailianpressWeb&os=web&sv=8.4.6&sign=9f8797a1f4de66c2370f7a03990d2737',
+        { headers: { ...HEADERS, Referer: 'https://www.cls.cn/' }, signal: AbortSignal.timeout(10000) }
+      )
     );
     const data = await resp.json();
-    return { turnover: data.data?.turnover || '0', turnover_change: data.data?.turnover_change || '0' };
+    // 数据为空/异常时返回 null（而非假值 '0'），Go/前端对空值显示 '--'
+    return {
+      turnover: data.data?.turnover ?? null,
+      turnover_change: data.data?.turnover_change ?? null,
+    };
   } catch (e) {
     console.error('成交额失败:', e.message);
     return {};
