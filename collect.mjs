@@ -235,12 +235,14 @@ async function fetchThreeIndices() {
 
 async function fetchHotStocks() {
   try {
-    const resp = await fetch(
-      'https://dq.10jqka.com.cn/fuyao/hot_list_data/out/hot_list/v1/stock?stock_type=a&type=hour&list_type=normal',
-      {
-        headers: { ...HEADERS, Accept: 'application/json, text/plain, */*', Referer: 'https://dq.10jqka.com.cn/', Origin: 'https://dq.10jqka.com.cn' },
-        signal: AbortSignal.timeout(10000),
-      }
+    const resp = await withRetry(() =>
+      fetch(
+        'https://dq.10jqka.com.cn/fuyao/hot_list_data/out/hot_list/v1/stock?stock_type=a&type=hour&list_type=normal',
+        {
+          headers: { ...HEADERS, Accept: 'application/json, text/plain, */*', Referer: 'https://dq.10jqka.com.cn/', Origin: 'https://dq.10jqka.com.cn' },
+          signal: AbortSignal.timeout(10000),
+        }
+      )
     );
     const data = await resp.json();
     if (data.status_code !== 0 || !data.data) return [];
@@ -294,7 +296,9 @@ async function fetchMarketTrend() {
 
 async function fetchCurrentIndex() {
   try {
-    const resp = await fetch('https://qt.gtimg.cn/q=sh000001', { headers: HEADERS, signal: AbortSignal.timeout(10000) });
+    const resp = await withRetry(() =>
+      fetch('https://qt.gtimg.cn/q=sh000001', { headers: HEADERS, signal: AbortSignal.timeout(10000) })
+    );
     const text = await resp.text();
     const m = text.match(/v_sh000001="([^"]+)"/);
     if (!m) return {};
@@ -356,14 +360,26 @@ async function fetchTHSAllA(dateStr) {
 // ---------- 上报 ----------
 
 async function postJson(path, body) {
-  const resp = await fetch(`${ENDPOINT}${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-  return resp.json();
+  let lastErr;
+  // 最多 3 次尝试；只对网络错误（fetch failed / 超时）重试，HTTP 4xx/5xx 直接抛出
+  for (let attempt = 0; attempt <= 2; attempt++) {
+    try {
+      const resp = await fetch(`${ENDPOINT}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(25000),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return resp.json();
+    } catch (e) {
+      lastErr = e;
+      const isHttpError = /^HTTP \d+$/.test(e.message);
+      if (isHttpError || attempt >= 2) break;
+      await sleep(1000 * (attempt + 1));
+    }
+  }
+  throw lastErr;
 }
 
 // ---------- 采集状态（字段级容错：失败沿用上拍值） ----------
@@ -428,8 +444,10 @@ async function collectBeat(beatTs) {
     }
   }
 
+  // target_ts 取实际采集时间（而非计划节拍 beatTs），避免连续超时导致 beatTs 落后、
+  // 被后端 stale_ts 校验拒绝（HTTP 400）。
   const payload = {
-    meta: { agent_id: AGENT_ID, target_ts: Math.floor(beatTs / 1000), date },
+    meta: { agent_id: AGENT_ID, target_ts: Math.floor(Date.now() / 1000), date },
     monitor: { events: last.events, indicators: last.indicators },
     review: { stocks: last.review || [], hot_stocks: last.hot || [] },
     jinji: last.jinji || { date, html: '', fetched_ts: 0 },
@@ -510,6 +528,11 @@ async function runSession(session) {
     }
 
     beat += BEAT_MS;
+    // 若节拍落后实际时间超过 60 秒（连续超时/重试导致），重新对齐到当前时间，
+    // 避免无间隔追拍造成短时间内大量请求。
+    if (beat < Date.now() - 60000) {
+      beat = Date.now();
+    }
     const sleepMs = beat - Date.now();
     if (sleepMs > 0) await sleep(sleepMs);
   }
