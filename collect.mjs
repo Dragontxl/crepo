@@ -246,10 +246,13 @@ async function fetchTurnover() {
       )
     );
     const data = await resp.json();
-    // 数据为空/异常时返回 null（而非假值 '0'），Go/前端对空值显示 '--'
+    // 财联社情绪接口字段已变更：成交额 shsz_balance、较昨日 shsz_balance_change_px
+    // （旧字段 turnover / turnover_change 已下线，读取会恒为 null）。
+    // preview_balance 为竞价预估，shsz_balance 为盘中/收盘实际成交额，取后者。
+    const d = data.data || {};
     return {
-      turnover: data.data?.turnover ?? null,
-      turnover_change: data.data?.turnover_change ?? null,
+      turnover: d.shsz_balance ?? d.turnover ?? null,
+      turnover_change: d.shsz_balance_change_px ?? d.turnover_change ?? null,
     };
   } catch (e) {
     console.error('成交额失败:', e.message);
