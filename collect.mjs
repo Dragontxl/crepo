@@ -2,7 +2,7 @@
  * A 股盘中数据采集脚本（GitHub Actions 运行，Node 20 ESM，零依赖）
  *
  * 节拍：8 秒/拍，A/B 两 Agent 相位差 4 秒（PHASE_OFFSET=0/4）
- * 时段（北京时间）：09:25:00-11:30:00、13:00:00-15:00:00
+ * 时段（北京时间）：09:25:00-11:31:00、13:00:00-15:01:00（尾部延 1 分钟，确保 11:30/15:00 检查点能触发）
  * 每拍：采集事件型快照（板块异动/涨停/跌停/炸板/情绪指标/人气热榜/晋级）→ POST /api/report
  * 检查点（10:30/11:30/13:30/14:30/15:00）：指数全日序列 → POST /api/report-indices
  * 晋级数据（jinji）：每 120 秒采集一次，两拍之间沿用上次结果
@@ -521,8 +521,8 @@ async function collectIndicesCheckpoint() {
 // ---------- 节拍状态机 ----------
 
 const SESSIONS = [
-  { start: '09:25', end: '11:30' },
-  { start: '13:00', end: '15:00' },
+  { start: '09:25', end: '11:31' },
+  { start: '13:00', end: '15:01' },
 ];
 const CHECKPOINTS = ['10:30', '11:30', '13:30', '14:30', '15:00'];
 
@@ -559,7 +559,7 @@ async function runSession(session) {
         console.log(`[${nowHm}] 拍 ${beatCount} ${result.changed ? '已更新并广播' : '无变化'}`);
       }
     } catch (e) {
-      console.error(`[${nowHm}] 拍 ${beatCount} 上报失败:`, e.message);
+      console.error(`[${nowHm}] 拍 ${beatCount} 上报失败:`, e.message, '| cause:', e.cause?.code || e.cause?.message || '');
     }
 
     // 指数检查点（跨过时间点即触发，每点一次）
@@ -569,7 +569,7 @@ async function runSession(session) {
         try {
           await collectIndicesCheckpoint();
         } catch (e) {
-          console.error(`检查点 ${cp} 失败:`, e.message);
+          console.error(`检查点 ${cp} 失败:`, e.message, '| cause:', e.cause?.code || e.cause?.message || '');
         }
       }
     }
