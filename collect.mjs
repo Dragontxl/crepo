@@ -397,9 +397,9 @@ async function fetchTHSAllA(dateStr) {
       fields.forEach((f, i) => (point[f] = item[i]));
       return { timestamp: point['1'] || 0, price: point['10'] || 0, change: point['13'] || 0, volume: point['19'] || 0 };
     });
-    return { code: '883421', name: '同花顺全A', trend_data: trendData, date: dateStr, prev_close: prevClose };
+    return { code: '883421', name: '全A指数', trend_data: trendData, date: dateStr, prev_close: prevClose };
   } catch (e) {
-    console.error('同花顺全A失败:', e.message);
+    console.error('全A指数失败:', e.message);
     return {};
   }
 }
