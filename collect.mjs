@@ -2,7 +2,7 @@
  * A 股盘中数据采集脚本（GitHub Actions 运行，Node 20 ESM，零依赖）
  *
  * 节拍：8 秒/拍，A/B 两 Agent 相位差 4 秒（PHASE_OFFSET=0/4）
- * 时段（北京时间）：09:25:00-11:31:00、13:00:00-15:01:00（尾部延 1 分钟，确保 11:30/15:00 检查点能触发）
+ * 时段（北京时间）：09:25:00-11:30:00、13:00:00-15:00:00
  * 每拍：采集事件型快照（板块异动/涨停/跌停/炸板/情绪指标/人气热榜/晋级）→ POST /api/report
  * 检查点（10:30/11:30/13:30/14:30/15:00）：指数全日序列 → POST /api/report-indices
  * 晋级数据（jinji）：每 120 秒采集一次，两拍之间沿用上次结果
@@ -262,7 +262,7 @@ async function fetchTurnover() {
 
 async function fetchThreeIndices() {
   try {
-    const resp = await fetch('https://qt.gtimg.cn/q=sh000001,sz399001,sz399006', {
+    const resp = await fetch('https://qt.gtimg.cn/q=sh000001,sz399001,sz399006,sh000688,bj899050', {
       headers: HEADERS,
       signal: AbortSignal.timeout(10000),
     });
@@ -273,7 +273,7 @@ async function fetchThreeIndices() {
       const p = m[1].split('~');
       return { name: p[1], code: p[2], price: parseFloat(p[3]), change: parseFloat(p[31] || 0) };
     };
-    return { sz: parse('sh000001'), sc: parse('sz399001'), cyb: parse('sz399006') };
+    return { sz: parse('sh000001'), sc: parse('sz399001'), cyb: parse('sz399006'), kcb: parse('sh000688'), bz50: parse('bj899050') };
   } catch (e) {
     console.error('三指数失败:', e.message);
     return {};
@@ -476,6 +476,10 @@ async function collectBeat(beatTs) {
     sc_index_change: threeIndices.sc?.change || indicatorsRaw.sc_index_change,
     cyb_index_price: threeIndices.cyb?.price || indicatorsRaw.cyb_index_price,
     cyb_index_change: threeIndices.cyb?.change || indicatorsRaw.cyb_index_change,
+    kcb_index_price: threeIndices.kcb?.price || indicatorsRaw.kcb_index_price,
+    kcb_index_change: threeIndices.kcb?.change || indicatorsRaw.kcb_index_change,
+    bz50_index_price: threeIndices.bz50?.price || indicatorsRaw.bz50_index_price,
+    bz50_index_change: threeIndices.bz50?.change || indicatorsRaw.bz50_index_change,
     timestamp: new Date().toISOString(),
   };
 
@@ -521,8 +525,8 @@ async function collectIndicesCheckpoint() {
 // ---------- 节拍状态机 ----------
 
 const SESSIONS = [
-  { start: '09:25', end: '11:31' },
-  { start: '13:00', end: '15:01' },
+  { start: '09:25', end: '11:30' },
+  { start: '13:00', end: '15:00' },
 ];
 const CHECKPOINTS = ['10:30', '11:30', '13:30', '14:30', '15:00'];
 
@@ -559,7 +563,7 @@ async function runSession(session) {
         console.log(`[${nowHm}] 拍 ${beatCount} ${result.changed ? '已更新并广播' : '无变化'}`);
       }
     } catch (e) {
-      console.error(`[${nowHm}] 拍 ${beatCount} 上报失败:`, e.message, '| cause:', e.cause?.code || e.cause?.message || '');
+      console.error(`[${nowHm}] 拍 ${beatCount} 上报失败:`, e.message);
     }
 
     // 指数检查点（跨过时间点即触发，每点一次）
@@ -569,7 +573,7 @@ async function runSession(session) {
         try {
           await collectIndicesCheckpoint();
         } catch (e) {
-          console.error(`检查点 ${cp} 失败:`, e.message, '| cause:', e.cause?.code || e.cause?.message || '');
+          console.error(`检查点 ${cp} 失败:`, e.message);
         }
       }
     }
