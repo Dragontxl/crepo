@@ -61,14 +61,24 @@ function withRetry(fn, maxRetries = 2, delay = 800) {
 // ---------- 抓取函数（与 ashare-data/src/sync 同源） ----------
 
 async function fetchPool(poolName) {
-  const resp = await withRetry(() =>
-    fetch(`https://flash-api.xuangubao.cn/api/pool/detail?pool_name=${poolName}`, {
-      headers: { ...HEADERS, Referer: 'https://xuangubao.cn/' },
-      signal: AbortSignal.timeout(10000),
-    })
-  );
-  const data = await resp.json();
-  return data.data || [];
+  try {
+    const resp = await withRetry(() =>
+      fetch(`https://flash-api.xuangubao.cn/api/pool/detail?pool_name=${poolName}`, {
+        headers: { ...HEADERS, Referer: 'https://xuangubao.cn/' },
+        signal: AbortSignal.timeout(10000),
+      })
+    );
+    const data = await resp.json();
+    const items = data.data;
+    if (!Array.isArray(items)) {
+      console.error(`fetchPool(${poolName}) 返回非数组:`, typeof items, JSON.stringify(items).slice(0, 200));
+      return [];
+    }
+    return items;
+  } catch (e) {
+    console.error(`fetchPool(${poolName}) 失败:`, e.message);
+    return [];
+  }
 }
 
 async function fetchSectorEvents() {
