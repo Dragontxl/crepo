@@ -86,6 +86,138 @@ function withRetry(fn, maxRetries = 2, delay = 800) {
   })();
 }
 
+// ---------- yd_reason CDN 读取 + CSV 解析 ----------
+
+const R2_CDN_BASE = 'https://ashare.ldragon.xyz';
+
+async function cdnGetText(key) {
+  const url = `${R2_CDN_BASE}/${key}`;
+  const resp = await fetch(url, {
+    headers: HEADERS,
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!resp.ok) throw new Error(`CDN GET ${key}: HTTP ${resp.status}`);
+  return resp.text();
+}
+
+function parsePanzhCsv(text) {
+  // Map<code, {code, name, concept, reason, boards}>
+  const map = new Map();
+  const order = [];
+  const lines = text.split(/\r?\n/);
+  // 跳过表头
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cols = line.split(',');
+    const code = (cols[0] || '').trim().padStart(6, '0');
+    const name = (cols[1] || '').trim();
+    const concept = (cols[2] || '').trim();
+    const reason = (cols[3] || '').trim();
+    const boards = (cols[4] || '').trim();
+    if (code && code !== '000000') {
+      map.set(code, { code, name, concept, reason, boards });
+      order.push(code);
+    }
+  }
+  return { map, order };
+}
+
+function parseMasterCsv(text) {
+  // byCode: Map<stock_code, {C, V, W}>
+  // byName: Map<股票名称, {C, V, W}>
+  const byCode = new Map();
+  const byName = new Map();
+  const lines = text.split(/\r?\n/);
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cols = line.split(',');
+    const name = (cols[0] || '').trim();
+    const cCol = (cols[2] || '').trim();  // C 列：涨停原因
+    const stockCode = (cols[20] || '').trim().padStart(6, '0');
+    const vCol = (cols[21] || '').trim(); // V 列：概念关键词1
+    const wCol = (cols[22] || '').trim(); // W 列：概念关键词2
+    const entry = { C: cCol, V: vCol, W: wCol };
+    if (stockCode && stockCode !== '000000') byCode.set(stockCode, entry);
+    if (name) byName.set(name, entry);
+  }
+  return { byCode, byName };
+}
+
+function parseBoardsTxt(text) {
+  return new Set(text.split(/\r?\n/).map(s => s.trim()).filter(Boolean));
+}
+
+function parseMatchTxt(text) {
+  const map = new Map();
+  for (const line of text.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const [k, v] = t.split(':');
+    if (k && v) map.set(k.trim(), v.trim());
+  }
+  return map;
+}
+
+function serializePanzhCsv(panzh) {
+  const lines = ['\ufeff股票代码,股票名称,概念,涨停原因,连板'];
+  for (const code of panzh.order) {
+    const r = panzh.map.get(code);
+    if (r) lines.push(`${r.code},${r.name},${r.concept},${r.reason},${r.boards}`);
+  }
+  return lines.join('\r\n');
+}
+
+// --- yd_reason 运行时状态 ---
+let ydReason = {
+  panzh: { map: new Map(), order: [] },
+  master: { byCode: new Map(), byName: new Map() },
+  boards: new Set(),
+  matchMap: new Map(),
+  loaded: false,
+};
+
+async function initYdReason() {
+  const date = beijingDateStr();
+  console.log('[yd_reason] 初始化...');
+
+  // 1. panzh.csv（当日）
+  try {
+    const csv = await cdnGetText(`yd_reason/yd_reason_today/${date}_yd_reason_today_panzh.csv`);
+    ydReason.panzh = parsePanzhCsv(csv);
+    console.log(`[yd_reason] panzh: ${ydReason.panzh.map.size} 行`);
+  } catch {
+    console.log('[yd_reason] 当日 panzh 不存在，新建');
+  }
+
+  // 2. master yd_reason.csv
+  try {
+    const csv = await cdnGetText('yd_reason/yd_reason.csv');
+    ydReason.master = parseMasterCsv(csv);
+    console.log(`[yd_reason] master: ${ydReason.master.byCode.size} 行`);
+  } catch (e) {
+    console.error(`[yd_reason] master 下载失败: ${e.message}，降级为空`);
+  }
+
+  // 3. boards.txt
+  try {
+    const txt = await cdnGetText('boards/boards.txt');
+    ydReason.boards = parseBoardsTxt(txt);
+    console.log(`[yd_reason] boards: ${ydReason.boards.size} 条`);
+  } catch { }
+
+  // 4. match.txt
+  try {
+    const txt = cdnGetText('boards/match.txt');
+    ydReason.matchMap = parseMatchTxt(await txt);
+    console.log(`[yd_reason] match: ${ydReason.matchMap.size} 条`);
+  } catch { }
+
+  ydReason.loaded = true;
+  console.log('[yd_reason] 初始化完成');
+}
+
 // ---------- 抓取函数（与 ashare-data/src/sync 同源） ----------
 
 async function fetchPool(poolName) {
@@ -475,6 +607,173 @@ async function postJson(path, body) {
   throw lastErr;
 }
 
+// ---------- yd_reason 修正链 ----------
+
+function applyYdReasonCorrection(item, panzh, master, boards, matchRules) {
+  const code = String(item.symbol || '').padStart(6, '0');
+  const name = item.stock_chi_name || '';
+
+  // 确保 surge_reason 结构存在
+  if (!item.surge_reason || typeof item.surge_reason !== 'object')
+    item.surge_reason = { stock_reason: '', related_plates: [] };
+  if (!Array.isArray(item.surge_reason.related_plates))
+    item.surge_reason.related_plates = [];
+  if (item.surge_reason.related_plates.length === 0)
+    item.surge_reason.related_plates.push({ plate_name: '', plate_reason: '' });
+  const plate = item.surge_reason.related_plates[0];
+
+  let concept = '', reason = '';
+
+  // (a) panzh 优先
+  if (panzh.map.has(code)) {
+    const row = panzh.map.get(code);
+    concept = row.concept || '';
+    reason = row.reason || '';
+  }
+  // (b) master 查表：C 列有内容
+  else if (master.byCode.has(code) || master.byName.has(name)) {
+    const m = master.byCode.get(code) || master.byName.get(name);
+    if (m.C) {
+      reason = m.C;
+      const isShouban = Number(item.limit_up_days) === 1;
+      if (isShouban && m.V === '公告' && m.W) {
+        concept = m.W;
+      } else {
+        concept = m.V || '';
+      }
+    } else {
+      concept = normalizeConcept(plate.plate_name, boards, matchRules);
+      reason = item.surge_reason.stock_reason || '';
+    }
+  }
+  // (c) boards/match 规范化
+  else {
+    concept = normalizeConcept(plate.plate_name, boards, matchRules);
+    reason = item.surge_reason.stock_reason || '';
+  }
+
+  // 回填空值保护
+  if (panzh.map.has(code)) {
+    const row = panzh.map.get(code);
+    if (!row.concept && concept) row.concept = concept;
+    if (!row.reason && reason) row.reason = reason;
+    return;
+  }
+
+  // 新股票：追加到 panzh
+  const boardsVal = String(item.limit_up_days || '');
+  panzh.map.set(code, { code, name, concept, reason, boards: boardsVal });
+  panzh.order.push(code);
+
+  // 覆写到 item（用于 snap payload）
+  plate.plate_name = concept || plate.plate_name;
+  item.surge_reason.stock_reason = reason || item.surge_reason.stock_reason;
+}
+
+function normalizeConcept(plateName, boards, matchRules) {
+  if (!plateName) return '';
+  if (boards.has(plateName)) return plateName;
+  if (matchRules.has(plateName)) return matchRules.get(plateName);
+  return plateName;
+}
+
+// ---------- 会话尾 panzh 上传 ----------
+
+async function uploadPanzhToR2(date, localPanzh) {
+  const R2_KEY = `yd_reason/yd_reason_today/${date}_yd_reason_today_panzh.csv`;
+
+  // 1. 下载 R2 现有版本
+  let remotePanzh = { map: new Map(), order: [] };
+  try {
+    const csv = await cdnGetText(R2_KEY);
+    remotePanzh = parsePanzhCsv(csv);
+  } catch { /* 404 → 空 */ }
+
+  // 2. Union merge（远端优先 + 本地补入 + 空值回填）
+  for (const [code, localRow] of localPanzh.map) {
+    if (!remotePanzh.map.has(code)) {
+      remotePanzh.map.set(code, localRow);
+      remotePanzh.order.push(code);
+    } else {
+      const rr = remotePanzh.map.get(code);
+      if (!rr.concept && localRow.concept) rr.concept = localRow.concept;
+      if (!rr.reason && localRow.reason) rr.reason = localRow.reason;
+    }
+  }
+
+  // 3. S3 PUT（需要 S3 签名 — 使用 sigv4 方式）
+  const csvBody = serializePanzhCsv(remotePanzh);
+  const accountId = process.env.R2_ACCOUNT_ID || '';
+  const accessKey = process.env.R2_S3_ACCESS_KEY_ID || '';
+  const secretKey = process.env.R2_S3_SECRET_ACCESS_KEY || '';
+
+  if (!accountId || !accessKey || !secretKey) {
+    console.error('[panzh] 缺少 R2 S3 凭证，跳过上传');
+    return;
+  }
+
+  try {
+    const host = `${accountId}.r2.cloudflarestorage.com`;
+    const url = `https://${host}/ashare/${R2_KEY}`;
+    const now = new Date();
+    const amzDate = now.toISOString().replace(/[:-]|\.\d{3}/g, '').slice(0, 15) + 'Z';
+    const dateStamp = amzDate.slice(0, 8);
+
+    // SigV4 PUT 签名
+    const encoder = new TextEncoder();
+    const payloadHash = await crypto.subtle.digest('SHA-256', encoder.encode(csvBody))
+      .then(buf => Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join(''));
+
+    const canonicalHeaders = `host:${host}\n`;
+    const signedHeaders = 'host';
+    const canonicalRequest = [
+      'PUT', `/ashare/${R2_KEY}`, '', canonicalHeaders, signedHeaders, payloadHash,
+    ].join('\n');
+
+    const credentialScope = `${dateStamp}/auto/s3/aws4_request`;
+    const stringToSign = [
+      'AWS4-HMAC-SHA256', amzDate, credentialScope,
+      await crypto.subtle.digest('SHA-256', encoder.encode(canonicalRequest))
+        .then(buf => Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')),
+    ].join('\n');
+
+    const hmac = (key, msg) => crypto.subtle.importKey('raw', encoder.encode(key),
+      { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+      .then(k => crypto.subtle.sign('HMAC', k, encoder.encode(msg)))
+      .then(buf => new Uint8Array(buf));
+
+    const kDate = await hmac(`AWS4${secretKey}`, dateStamp);
+    const kRegion = await hmac(kDate, 'auto');
+    const kService = await hmac(kRegion, 's3');
+    const kSigning = await hmac(kService, 'aws4_request');
+    const signature = await crypto.subtle.sign('HMAC', kSigning, encoder.encode(stringToSign))
+      .then(buf => Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join(''));
+
+    const authHeader = `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+    const resp = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        'Host': host,
+        'Content-Type': 'text/csv; charset=utf-8',
+        'x-amz-date': amzDate,
+        'x-amz-content-sha256': payloadHash,
+        'Authorization': authHeader,
+      },
+      body: csvBody,
+      signal: AbortSignal.timeout(30000),
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 200)}`);
+    }
+    console.log(`[panzh] 已上传 ${remotePanzh.map.size} 行 → s3://ashare/${R2_KEY}`);
+  } catch (e) {
+    console.error(`[panzh] 上传失败: ${e.message}`);
+  }
+}
+
 // ---------- 采集状态（字段级容错：失败沿用上拍值） ----------
 
 const last = {
@@ -495,6 +794,13 @@ async function collectBeat(beatTs) {
     fetchPool('limit_down'),
     fetchPool('limit_up_broken'),
   ]);
+
+  // yd_reason 修正（每拍覆写 plate_name + stock_reason）
+  if (ydReason.loaded) {
+    for (const item of [...upItems, ...brokenItems]) {
+      applyYdReasonCorrection(item, ydReason.panzh, ydReason.master, ydReason.boards, ydReason.matchMap);
+    }
+  }
 
   const [sectorEvents, indicatorsRaw, turnover, threeIndices, hotStocks] = await Promise.all([
     fetchSectorEvents(),
@@ -648,9 +954,31 @@ async function main() {
   }
   console.log(`采集 Agent ${AGENT_ID} 启动，上报地址 ${ENDPOINT}`);
 
-  // 单次启动只执行「结束时间尚未到达」的第一个会话：
-  // 09:20 触发 → 跑早盘(09:25-11:30)；12:55 触发 → 早盘已过，跑午盘(13:00-15:00)。
-  // 避免单次运行同时覆盖早盘+午盘，导致 09:20 与 12:55 两次触发在午盘重复采集。
+  // 初始化 yd_reason（CDN 读取 master/boards/match + panzh）
+  await initYdReason();
+
+  // FORCE 模式：跳过时段检查，跑一轮采集后退出（用于测试）
+  if (process.env.FORCE === '1') {
+    console.log('[FORCE] 强制模式：跳过时段检查，执行单拍采集');
+    try {
+      const result = await collectBeat(Date.now());
+      console.log(`[FORCE] 采集完成，changed=${result.changed}`);
+      // 打印修正后的 panzh 状态
+      console.log(`[FORCE] panzh 当前 ${ydReason.panzh.map.size} 只股票`);
+      for (const [code, row] of ydReason.panzh.map) {
+        console.log(`  ${code} ${row.name} | 概念=${row.concept} | 原因=${row.reason}`);
+      }
+    } catch (e) {
+      console.error('[FORCE] 采集失败:', e.message);
+    }
+    // 上传 panzh
+    const date = beijingDateStr();
+    await uploadPanzhToR2(date, ydReason.panzh);
+    console.log('[FORCE] 结束');
+    return;
+  }
+
+  // 正常模式：按时段执行
   const now = Date.now();
   const session = SESSIONS.find((s) => sessionBounds(s).end > now);
 
@@ -660,6 +988,11 @@ async function main() {
   }
   console.log(`执行会话 ${session.start}-${session.end}`);
   await runSession(session);
+
+  // 会话尾：上传 panzh 到 R2
+  const date = beijingDateStr();
+  await uploadPanzhToR2(date, ydReason.panzh);
+
   console.log('采集结束');
 }
 
