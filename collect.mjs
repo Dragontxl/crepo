@@ -824,6 +824,9 @@ const last = {
 
 async function collectBeat(beatTs) {
   const date = beijingDateStr();
+  const t0 = Date.now();
+  const timers = {};
+  function mark(label) { const now = Date.now(); const prev = Object.values(timers).length ? Object.values(timers)[Object.values(timers).length-1] : t0; timers[label] = now - prev; }
 
   // 三池一次采集，事件流与异动股票共用
   const [upItems, downItems, brokenItems] = await Promise.all([
@@ -831,6 +834,7 @@ async function collectBeat(beatTs) {
     fetchPool('limit_down'),
     fetchPool('limit_up_broken'),
   ]);
+  mark('fetchPool(3)');
 
   // yd_reason 修正（每拍覆写 plate_name + stock_reason）
   if (ydReason.loaded) {
@@ -838,6 +842,7 @@ async function collectBeat(beatTs) {
       applyYdReasonCorrection(item, ydReason.panzh, ydReason.master, ydReason.boards, ydReason.matchMap);
     }
   }
+  mark('ydReason');
 
   const [sectorEvents, indicatorsRaw, turnover, threeIndices, hotStocks] = await Promise.all([
     fetchSectorEvents(),
@@ -846,6 +851,7 @@ async function collectBeat(beatTs) {
     fetchThreeIndices(),
     fetchHotStocks(),
   ]);
+  mark('fetchData(5)');
 
   last.events = {
     板块异动: sectorEvents,
@@ -883,6 +889,7 @@ async function collectBeat(beatTs) {
       last.jinjiFetchedAt = beatTs;
     }
   }
+  mark('jinji');
 
   // target_ts 取实际采集时间（而非计划节拍 beatTs），避免连续超时导致 beatTs 落后、
   // 被后端 stale_ts 校验拒绝（HTTP 400）。
@@ -893,7 +900,14 @@ async function collectBeat(beatTs) {
     jinji: last.jinji || { date, html: '', fetched_ts: 0 },
   };
 
-  return postJson('/api/report', payload);
+  const postResult = await postJson('/api/report', payload);
+  mark('postJson');
+
+  const total = Date.now() - t0;
+  if (total > 3000) {
+    console.log(`[beat] 耗时 ${total}ms |`, Object.entries(timers).map(([k,v]) => `${k}:${v}ms`).join(' '));
+  }
+  return postResult;
 }
 
 async function collectIndicesCheckpoint() {
