@@ -21,6 +21,8 @@ const AGENT_ID = process.env.AGENT_ID || (PHASE_OFFSET === 0 ? 'A' : 'B');
 
 const BEAT_MS = 8000;
 const JINJI_INTERVAL_MS = 120_000;
+const HOT_STOCKS_INTERVAL_MS = 300_000; // 人气榜5分钟刷新一次
+const TURNOVER_CACHE_MS = 30_000;       // 成交额30秒缓存
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
 };
@@ -225,7 +227,7 @@ async function fetchPool(poolName) {
     const resp = await withRetry(() =>
       fetch(`https://flash-api.xuangubao.cn/api/pool/detail?pool_name=${poolName}`, {
         headers: { ...HEADERS, Referer: 'https://xuangubao.cn/' },
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(5000),
       })
     );
     const data = await resp.json();
@@ -245,7 +247,7 @@ async function fetchSectorEvents() {
   try {
     const resp = await fetch('https://api.xuangubao.cn/api/messages/todayDaPanYiDong?headmark=0', {
       headers: { ...HEADERS, Referer: 'https://xuangubao.cn/' },
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(5000),
     });
     const data = await resp.json();
     const events = data.Messages || data.messages || [];
@@ -387,7 +389,7 @@ async function fetchIndicators() {
     const resp = await withRetry(() =>
       fetch(
         'https://flash-api.xuangubao.com.cn/api/market_indicator/line?fields=rise_count,fall_count,limit_up_count,limit_down_count,limit_up_broken_count,limit_up_broken_ratio,yesterday_limit_up_avg_pcp',
-        { headers: { ...HEADERS, Referer: 'https://xuangubao.cn/' }, signal: AbortSignal.timeout(10000) }
+        { headers: { ...HEADERS, Referer: 'https://xuangubao.cn/' }, signal: AbortSignal.timeout(5000) }
       )
     );
     const data = await resp.json();
@@ -412,7 +414,7 @@ async function fetchTurnover() {
     const resp = await withRetry(() =>
       fetch(
         'https://x-quote.cls.cn/v2/quote/a/stock/emotion?app=CailianpressWeb&os=web&sv=8.4.6&sign=9f8797a1f4de66c2370f7a03990d2737',
-        { headers: { ...HEADERS, Referer: 'https://www.cls.cn/' }, signal: AbortSignal.timeout(10000) }
+        { headers: { ...HEADERS, Referer: 'https://www.cls.cn/' }, signal: AbortSignal.timeout(5000) }
       )
     );
     const data = await resp.json();
@@ -434,7 +436,7 @@ async function fetchThreeIndices() {
   try {
     const resp = await fetch('https://qt.gtimg.cn/q=sh000001,sz399001,sz399006,sh000688,bj899050', {
       headers: HEADERS,
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(5000),
     });
     const text = await resp.text();
     const parse = (code) => {
@@ -457,7 +459,7 @@ async function fetchHotStocks() {
         'https://dq.10jqka.com.cn/fuyao/hot_list_data/out/hot_list/v1/stock?stock_type=a&type=hour&list_type=normal',
         {
           headers: { ...HEADERS, Accept: 'application/json, text/plain, */*', Referer: 'https://dq.10jqka.com.cn/', Origin: 'https://dq.10jqka.com.cn' },
-          signal: AbortSignal.timeout(10000),
+          signal: AbortSignal.timeout(5000),
         }
       )
     );
@@ -508,7 +510,7 @@ async function fetchMarketTrend() {
     const resp = await withRetry(() =>
       fetch('https://api-ddc-wscn.xuangubao.cn/market/trend?fields=tick_at,close_px&prod_code=000001.SS', {
         headers: { ...HEADERS, Referer: 'https://xuangubao.cn/' },
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(5000),
       })
     );
     const data = await resp.json();
@@ -522,7 +524,7 @@ async function fetchMarketTrend() {
 async function fetchCurrentIndex() {
   try {
     const resp = await withRetry(() =>
-      fetch('https://qt.gtimg.cn/q=sh000001', { headers: HEADERS, signal: AbortSignal.timeout(10000) })
+      fetch('https://qt.gtimg.cn/q=sh000001', { headers: HEADERS, signal: AbortSignal.timeout(5000) })
     );
     const text = await resp.text();
     const m = text.match(/v_sh000001="([^"]+)"/);
@@ -541,7 +543,7 @@ async function fetchPrevCloseTHSAllA() {
       method: 'POST',
       headers: { ...HEADERS, 'Content-Type': 'application/json', Referer: 'https://www.iwencai.com/', Origin: 'https://www.iwencai.com', 'x-auth-appname': 'AINVEST', 'x-auth-type': 'ths' },
       body: JSON.stringify({ code_list: [{ codes: ['883421'], market: '48' }], trade_class: 'intraday', time_period: 'day_1', adjust_type: 'forward', begin_time: -10, end_time: 0, trade_date: -1, gpid: 1 }),
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(5000),
     });
     const result = await resp.json();
     const values = result.data?.quote_data?.[0]?.value || [];
@@ -562,7 +564,7 @@ async function fetchTHSAllA(dateStr) {
         method: 'POST',
         headers: { ...HEADERS, 'Content-Type': 'application/json', Referer: 'https://www.iwencai.com/', Origin: 'https://www.iwencai.com', 'x-auth-appname': 'AINVEST', 'x-auth-type': 'ths' },
         body: JSON.stringify({ code_list: [{ codes: ['883421'], market: '48' }], begin_time: startTime, end_time: endTime, gpid: 1, time_zone: 'Asia/Shanghai', trade_class: 'intraday', data_fields: ['1', '10', '13', '19'] }),
-        signal: AbortSignal.timeout(10000),
+        signal: AbortSignal.timeout(5000),
       }),
       fetchPrevCloseTHSAllA(),
     ]);
@@ -593,7 +595,7 @@ async function postJson(path, body) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TOKEN}` },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(25000),
+        signal: AbortSignal.timeout(15000),
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       return resp.json();
@@ -820,13 +822,16 @@ const last = {
   hot: null,
   jinji: null,
   jinjiFetchedAt: 0,
+  hotStocksFetchedAt: 0,
+  turnoverCache: null,
+  turnoverFetchedAt: 0,
 };
 
 async function collectBeat(beatTs) {
   const date = beijingDateStr();
   const t0 = Date.now();
   const timers = {};
-  function mark(label) { const now = Date.now(); const prev = Object.values(timers).length ? Object.values(timers)[Object.values(timers).length-1] : t0; timers[label] = now - prev; }
+  function mark(label) { timers[label] = Date.now() - t0; }
 
   // 三池一次采集，事件流与异动股票共用
   const [upItems, downItems, brokenItems] = await Promise.all([
@@ -844,14 +849,32 @@ async function collectBeat(beatTs) {
   }
   mark('ydReason');
 
-  const [sectorEvents, indicatorsRaw, turnover, threeIndices, hotStocks] = await Promise.all([
+  // hotStocks 低频（5 分钟）
+  let hotStocks = last.hot || [];
+  if (beatTs - last.hotStocksFetchedAt >= HOT_STOCKS_INTERVAL_MS || !last.hot) {
+    try {
+      const fresh = await fetchHotStocks();
+      if (fresh && fresh.length > 0) { hotStocks = fresh; last.hot = fresh; }
+      last.hotStocksFetchedAt = beatTs;
+    } catch (_) {}
+  }
+
+  // turnover 缓存 30 秒
+  let turnover;
+  if (beatTs - last.turnoverFetchedAt < TURNOVER_CACHE_MS && last.turnoverCache) {
+    turnover = last.turnoverCache;
+  } else {
+    turnover = await fetchTurnover();
+    last.turnoverCache = turnover;
+    last.turnoverFetchedAt = beatTs;
+  }
+
+  const [sectorEvents, indicatorsRaw, threeIndices] = await Promise.all([
     fetchSectorEvents(),
     fetchIndicators(),
-    fetchTurnover(),
     fetchThreeIndices(),
-    fetchHotStocks(),
   ]);
-  mark('fetchData(5)');
+  mark('fetchData(4)');
 
   last.events = {
     板块异动: sectorEvents,
