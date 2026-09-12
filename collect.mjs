@@ -25,6 +25,34 @@ const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
 };
 
+// ---------- duanxianxia 数据源分流 ----------
+// 源站交易时段（istrade=1）真实数据在 ds.duanxianxia.com，主站为滞留数据/
+// 拒绝服务——这是午后 collector 大面积失败和 jinji 拿到早盘滞留版本的根因。
+// 跟随 /vendor/stockdata/datasource.json 动态选择域名，60 秒缓存，配置接口
+// 失败按"交易时段"处理走 ds（更安全，采集脚本只在盘中运行）。
+
+let dsCache = { ts: 0, origin: null };
+
+async function resolveDuanxianxiaOrigin() {
+  if (dsCache.origin && Date.now() - dsCache.ts < 60_000) return dsCache.origin;
+  try {
+    const resp = await fetch('https://duanxianxia.com/vendor/stockdata/datasource.json', {
+      headers: HEADERS,
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const cfg = await resp.json();
+    const origin = cfg.istrade === 1 && cfg.data_url
+      ? String(cfg.data_url).replace(/\/$/, '')
+      : (Array.isArray(cfg.base_url) && cfg.base_url[0] ? String(cfg.base_url[0]).replace(/\/$/, '') : 'https://duanxianxia.com');
+    dsCache = { ts: Date.now(), origin };
+    return origin;
+  } catch (e) {
+    console.error('[datasource] 配置接口失败，降级使用 ds 分流域名:', e.message);
+    return 'https://ds.duanxianxia.com';
+  }
+}
+
 // ---------- 时间工具（北京时间 UTC+8） ----------
 
 function beijingNow() {
@@ -320,17 +348,25 @@ async function fetchHotStocks() {
 }
 
 async function fetchJinji() {
-  try {
-    const resp = await fetch('https://duanxianxia.com/vendor/stockdata/jinjidata.json', {
-      headers: { ...HEADERS, Referer: 'https://duanxianxia.com/' },
-      signal: AbortSignal.timeout(15000),
-    });
-    const data = await resp.json();
-    return { date: data.date || beijingDateStr(), html: data.html || '', fetched_ts: Math.floor(Date.now() / 1000) };
-  } catch (e) {
-    console.error('晋级数据失败:', e.message);
-    return null;
+  // 分流域名跟随 datasource.json（交易时段走 ds），带 2 次重试；
+  // 返回结构与原实现一致：{ date, html, fetched_ts }
+  const origin = await resolveDuanxianxiaOrigin();
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const resp = await fetch(`${origin}/vendor/stockdata/jinjidata.json`, {
+        headers: { ...HEADERS, Referer: 'https://duanxianxia.com/' },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      if (!data.html) throw new Error('html 为空');
+      return { date: data.date || beijingDateStr(), html: data.html || '', fetched_ts: Math.floor(Date.now() / 1000) };
+    } catch (e) {
+      console.error(`晋级数据失败(第${attempt}/3次, ${origin}):`, e.message);
+      if (attempt < 3) await sleep(1500 * attempt);
+    }
   }
+  return null;
 }
 
 // ---------- 指数检查点 ----------
