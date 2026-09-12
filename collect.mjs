@@ -772,8 +772,42 @@ async function uploadPanzhToR2(date, localPanzh) {
       throw new Error(`HTTP ${resp.status}: ${errText.slice(0, 200)}`);
     }
     console.log(`[panzh] 已上传 ${remotePanzh.map.size} 行 → s3://ashare/${R2_KEY}`);
+
+    // Purge CDN 缓存
+    await purgeCdnCache(`${R2_CDN_BASE}/${R2_KEY}`);
   } catch (e) {
     console.error(`[panzh] 上传失败: ${e.message}`);
+  }
+}
+
+async function purgeCdnCache(url) {
+  const zoneId = process.env.CF_ZONE_ID || '';
+  const apiToken = process.env.CF_API_TOKEN || '';
+  if (!zoneId || !apiToken) {
+    console.log('[cdn] CF_ZONE_ID/CF_API_TOKEN 未配置，跳过 purge');
+    return;
+  }
+  try {
+    const resp = await fetch(
+      `https://api.cloudflare.com/client/v4/zones/${zoneId}/purge_cache`,
+      {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${apiToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ files: [url] }),
+        signal: AbortSignal.timeout(15000),
+      }
+    );
+    const result = await resp.json();
+    if (result.success) {
+      console.log(`[cdn] 已清除: ${url}`);
+    } else {
+      console.error(`[cdn] purge 失败:`, result.errors);
+    }
+  } catch (e) {
+    console.error(`[cdn] purge 异常: ${e.message}`);
   }
 }
 
