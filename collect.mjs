@@ -597,7 +597,10 @@ async function postJson(path, body) {
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(15000),
       });
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      if (!resp.ok) {
+        const errBody = await resp.text().catch(() => '');
+        throw new Error(`HTTP ${resp.status}: ${errBody.slice(0, 200)}`);
+      }
       return resp.json();
     } catch (e) {
       lastErr = e;
@@ -869,12 +872,17 @@ async function collectBeat(beatTs) {
     last.turnoverFetchedAt = beatTs;
   }
 
-  const [sectorEvents, indicatorsRaw, threeIndices] = await Promise.all([
-    fetchSectorEvents(),
-    fetchIndicators(),
-    fetchThreeIndices(),
-  ]);
-  mark('fetchData(4)');
+  const tA = Date.now();
+  const sectorEvents = await fetchSectorEvents();
+  const tB = Date.now();
+  const indicatorsRaw = await fetchIndicators();
+  const tC = Date.now();
+  const threeIndices = await fetchThreeIndices();
+  const tD = Date.now();
+  mark('fetchData(3)');
+  if (tD - tA > 2000) {
+    console.log(`[beat] sector:${tB-tA}ms indicators:${tC-tB}ms three:${tD-tC}ms`);
+  }
 
   last.events = {
     板块异动: sectorEvents,
@@ -904,13 +912,9 @@ async function collectBeat(beatTs) {
   last.review = mergeReviewStocks(upItems, downItems, brokenItems);
   if (hotStocks.length > 0) last.hot = hotStocks;
 
-  // jinji 低频（120 秒）
+  // jinji 低频（120 秒）— 异步拉取不阻塞 beat
   if (beatTs - last.jinjiFetchedAt >= JINJI_INTERVAL_MS || !last.jinji) {
-    const jinji = await fetchJinji();
-    if (jinji) {
-      last.jinji = jinji;
-      last.jinjiFetchedAt = beatTs;
-    }
+    fetchJinji().then(j => { if (j) { last.jinji = j; last.jinjiFetchedAt = Date.now(); } }).catch(() => {});
   }
   mark('jinji');
 
