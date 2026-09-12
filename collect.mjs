@@ -612,14 +612,20 @@ async function runSession(session) {
       console.error(`[${nowHm}] 拍 ${beatCount} 上报失败:`, e.message);
     }
 
-    // 指数检查点（跨过时间点即触发，每点一次）
+    // 指数检查点（跨过时间点即触发；成功才标记完成，失败留待后续拍重试，
+    // 直至 hhmm() 越过 '15:04' 放弃——修复 2026-09-11 事故：
+    // 15:00 检查点单次瞬时失败被立即标记 done，归档只剩 14:30 截止的分时线）
     for (const cp of CHECKPOINTS) {
       if (!doneCheckpoints.has(cp) && nowHm >= cp && hhmm() < '15:05') {
-        doneCheckpoints.add(cp);
         try {
           await collectIndicesCheckpoint();
+          doneCheckpoints.add(cp);
         } catch (e) {
-          console.error(`检查点 ${cp} 失败:`, e.message);
+          console.error(`检查点 ${cp} 失败:`, e.message, '| cause:', e.cause?.code || e.cause?.message || '');
+          if (hhmm() >= '15:04') {
+            console.error(`检查点 ${cp} 已到 15:04 放弃窗口，不再重试`);
+            doneCheckpoints.add(cp);
+          }
         }
       }
     }
