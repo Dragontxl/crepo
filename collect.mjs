@@ -998,8 +998,11 @@ async function main() {
   if (process.env.FORCE === '1') {
     console.log('[FORCE] 强制模式：跳过时段检查，执行单拍采集');
     try {
+      const t0 = Date.now();
       const result = await collectBeat(Date.now());
-      console.log(`[FORCE] 采集完成，changed=${result.changed}`);
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+      const ok = result && result.ok;
+      console.log(`[FORCE] 采集完成 ${elapsed}s，上报${ok ? '成功' : '失败'}`);
       // 打印修正后的 panzh 状态
       console.log(`[FORCE] panzh 当前 ${ydReason.panzh.map.size} 只股票`);
       for (const [code, row] of ydReason.panzh.map) {
