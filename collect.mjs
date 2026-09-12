@@ -737,10 +737,13 @@ async function uploadPanzhToR2(date, localPanzh) {
         .then(buf => Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')),
     ].join('\n');
 
-    const hmac = (key, msg) => crypto.subtle.importKey('raw', encoder.encode(key),
-      { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
-      .then(k => crypto.subtle.sign('HMAC', k, encoder.encode(msg)))
-      .then(buf => new Uint8Array(buf));
+    const hmac = async (key, msg) => {
+      const keyBytes = key instanceof Uint8Array ? key : encoder.encode(key);
+      const k = await crypto.subtle.importKey('raw', keyBytes,
+        { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      const sig = await crypto.subtle.sign('HMAC', k, encoder.encode(msg));
+      return new Uint8Array(sig);
+    };
 
     const kDate = await hmac(`AWS4${secretKey}`, dateStamp);
     const kRegion = await hmac(kDate, 'auto');
