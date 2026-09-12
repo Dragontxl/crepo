@@ -749,8 +749,8 @@ async function uploadPanzhToR2(date, localPanzh) {
     const kRegion = await hmac(kDate, 'auto');
     const kService = await hmac(kRegion, 's3');
     const kSigning = await hmac(kService, 'aws4_request');
-    const signature = await crypto.subtle.sign('HMAC', kSigning, encoder.encode(stringToSign))
-      .then(buf => Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join(''));
+    const sigBytes = await hmac(kSigning, stringToSign);
+    const signature = Array.from(sigBytes).map(b => b.toString(16).padStart(2, '0')).join('');
 
     const authHeader = `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 
