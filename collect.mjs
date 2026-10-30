@@ -102,21 +102,52 @@ async function cdnGetText(key) {
   return resp.text();
 }
 
+/**
+ * RFC 4180 CSV 解析：支持带引号的多行字段（涨停原因列含英文逗号/换行）。
+ * 逐字符状态机，兼容未转义的旧格式行（无引号时退化为按逗号切分）。
+ */
+function parseCsvRecords(text) {
+  const records = [];
+  let field = '';
+  let record = [];
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += ch;
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === ',') {
+      record.push(field); field = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      record.push(field);
+      if (record.some((c) => c !== '')) records.push(record);
+      record = []; field = '';
+    } else field += ch;
+  }
+  record.push(field);
+  if (record.some((c) => c !== '')) records.push(record);
+  return records;
+}
+
 function parsePanzhCsv(text) {
   // Map<code, {code, name, concept, reason, boards}>
   const map = new Map();
   const order = [];
-  const lines = text.split(/\r?\n/);
+  const records = parseCsvRecords(text);
   // 跳过表头
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    const cols = line.split(',');
-    const code = (cols[0] || '').trim().padStart(6, '0');
-    const name = (cols[1] || '').trim();
-    const concept = (cols[2] || '').trim();
-    const reason = (cols[3] || '').trim();
-    const boards = (cols[4] || '').trim();
+  for (let i = 1; i < records.length; i++) {
+    const cols = records[i];
+    if (!cols.some((c) => c !== '')) continue;
+    const code = String(cols[0] || '').trim().padStart(6, '0');
+    const name = String(cols[1] || '').trim();
+    const concept = String(cols[2] || '').trim();
+    const reason = String(cols[3] || '').trim();
+    const boards = String(cols[4] || '').trim();
     if (code && code !== '000000') {
       map.set(code, { code, name, concept, reason, boards });
       order.push(code);
@@ -128,18 +159,19 @@ function parsePanzhCsv(text) {
 function parseMasterCsv(text) {
   // byCode: Map<stock_code, {C, V, W}>
   // byName: Map<股票名称, {C, V, W}>
+  // 用 RFC4180 解析：C 列(涨停原因) 可能含内嵌英文逗号/换行，
+  // 朴素 split(',') 会让后续列整体左移（股票代码掉进概念槽 → 概念显示成数字）
   const byCode = new Map();
   const byName = new Map();
-  const lines = text.split(/\r?\n/);
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    const cols = line.split(',');
-    const name = (cols[0] || '').trim();
-    const cCol = (cols[2] || '').trim();  // C 列：涨停原因
-    const stockCode = (cols[20] || '').trim().padStart(6, '0');
-    const vCol = (cols[21] || '').trim(); // V 列：概念关键词1
-    const wCol = (cols[22] || '').trim(); // W 列：概念关键词2
+  const records = parseCsvRecords(text);
+  for (let i = 1; i < records.length; i++) {
+    const cols = records[i];
+    if (!cols.some((c) => c !== '')) continue;
+    const name = String(cols[0] || '').trim();
+    const cCol = String(cols[2] || '').trim();  // C 列：涨停原因
+    const stockCode = String(cols[20] || '').trim().padStart(6, '0');
+    const vCol = String(cols[21] || '').trim(); // V 列：概念关键词1
+    const wCol = String(cols[22] || '').trim(); // W 列：概念关键词2
     const entry = { C: cCol, V: vCol, W: wCol };
     if (stockCode && stockCode !== '000000') byCode.set(stockCode, entry);
     if (name) byName.set(name, entry);
